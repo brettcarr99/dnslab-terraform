@@ -2,6 +2,10 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+data "cloudflare_zone" "dns_lab" {
+  zone_id = var.cloudflare_zone_id
+}
+
 locals {
   cf_records = {
     rootdns  = aws_instance.root_server.public_ip

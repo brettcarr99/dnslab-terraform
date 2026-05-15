@@ -84,6 +84,13 @@ aws s3 cp s3://${scripts_bucket}/chronicled-install.sh /tmp/chronicled-install.s
 chmod +x /tmp/chronicled-install.sh
 /tmp/chronicled-install.sh
 
+echo "==> Installing maintenance cron jobs"
+cat > /etc/cron.d/dns-lab-maintenance << 'CRON'
+0 2 * * *   root  yum update -y >> /var/log/yum-update.log 2>&1
+0 3 * * 1   root  /sbin/reboot
+CRON
+chmod 644 /etc/cron.d/dns-lab-maintenance
+
 echo "==> Sending reboot notification"
 aws sns publish \
   --region "${aws_region}" \

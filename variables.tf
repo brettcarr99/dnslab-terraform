@@ -54,8 +54,3 @@ variable "notification_email" {
   type        = string
 }
 
-variable "cloudflare_subdomain_prefix" {
-  description = "Prefix for DNS records, e.g. 'dns-lab' produces dns-lab-root.pwei.uk"
-  type        = string
-  default     = "dns-lab"
-}

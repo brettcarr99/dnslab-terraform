@@ -8,11 +8,12 @@ data "cloudflare_zone" "dns_lab" {
 
 locals {
   cf_records = {
-    rootdns  = aws_instance.root_server.public_ip
-    tlddns   = aws_instance.tld_server.public_ip
-    "2lddns" = aws_instance.sld_server.public_ip
-    resolver = aws_instance.resolver.public_ip
-    client   = aws_instance.client.public_ip
+    rootdns   = aws_instance.root_server.public_ip
+    tlddns    = aws_instance.tld_server.public_ip
+    "2lddns"  = aws_instance.sld_server.public_ip
+    resolver  = aws_instance.resolver.public_ip
+    client    = aws_instance.client.public_ip
+    dnsmaster = aws_instance.dnsmaster.public_ip
   }
 }
 

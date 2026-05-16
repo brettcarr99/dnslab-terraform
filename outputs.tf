@@ -30,6 +30,11 @@ output "servers" {
       public_ip  = aws_instance.client.public_ip
       private_ip = aws_instance.client.private_ip
     }
+    dnsmaster = {
+      dns_name   = "dnsmaster.${local.zone}"
+      public_ip  = aws_instance.dnsmaster.public_ip
+      private_ip = aws_instance.dnsmaster.private_ip
+    }
   }
 }
 

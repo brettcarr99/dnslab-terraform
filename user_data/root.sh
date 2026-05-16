@@ -1,5 +1,5 @@
 #!/bin/bash
-# Terraform template vars: root_ip=${root_ip}  tld_ip=${tld_ip}
+# Terraform template vars: root_ip=${root_ip}  tld_ip=${tld_ip}  dnsmaster_ip=${dnsmaster_ip}
 set -euo pipefail
 exec > >(tee /var/log/user-data.log | logger -t user-data -s) 2>&1
 
@@ -23,59 +23,72 @@ echo "==> Installing BIND"
 yum install -y bind bind-utils
 
 echo "==> Writing named.conf"
+mkdir -p /var/log/named
+chown named:named /var/log/named
+
 cat > /etc/named.conf << 'NAMED_CONF'
 options {
     listen-on port 53 { any; };
     listen-on-v6    { none; };
     directory       "/var/named";
     allow-query     { any; };
+    allow-transfer  { none; };
     recursion       no;
     dnssec-validation no;
 };
 
 logging {
+    channel xfer_log {
+        file "/var/log/named/xfer.log" versions 3 size 5m;
+        severity info;
+        print-time yes;
+    };
     channel queries_log {
         file "/var/log/named/queries.log" versions 3 size 5m;
         severity info;
         print-time yes;
     };
-    category queries { queries_log; };
+    category xfer-in   { xfer_log; };
+    category notify    { xfer_log; };
+    category queries   { queries_log; };
 };
 
+key "dns-lab-transfer" {
+    algorithm hmac-sha256;
+    secret "${tsig_secret}";
+};
+
+server ${dnsmaster_ip} { keys { dns-lab-transfer; }; };
+
 zone "." {
-    type master;
-    file "root.zone";
+    type slave;
+    masters { ${dnsmaster_ip}; };
+    file "slaves/root.zone";
+    allow-notify { ${dnsmaster_ip}; };
 };
 NAMED_CONF
 
-echo "==> Writing root zone"
-mkdir -p /var/log/named
-chown named:named /var/log/named
+echo "==> Creating slaves directory"
+mkdir -p /var/named/slaves
+chown named:named /var/named/slaves
+chmod 770 /var/named/slaves
 
-cat > /var/named/root.zone << 'ZONE'
-$TTL 86400
-.   IN  SOA ns.root. hostmaster.root. (
-            2024010101 ; serial
-            3600       ; refresh
-            900        ; retry
-            604800     ; expire
-            86400 )    ; minimum
+echo "==> Validating named configuration"
+named-checkconf
 
-; Root nameserver
-.           IN  NS  ns.root.
-ns.root.    IN  A   ${root_ip}
-
-; Delegation for lab. TLD
-lab.        IN  NS  ns.lab.
-ns.lab.     IN  A   ${tld_ip}
-ZONE
-
-chown named:named /var/named/root.zone
-chmod 640 /var/named/root.zone
+echo "==> Waiting for dnsmaster to be reachable on port 53 (up to 5 min)..."
+count=0
+until nc -zw3 ${dnsmaster_ip} 53 2>/dev/null; do
+  count=$(( count + 1 ))
+  if [ "$count" -ge 30 ]; then
+    echo "  dnsmaster not yet reachable; starting named anyway (AXFR will retry)"
+    break
+  fi
+  echo "  attempt $count/30, retrying in 10s..."
+  sleep 10
+done
 
 echo "==> Starting named"
-named-checkconf
-named-checkzone . /var/named/root.zone
 systemctl enable named
 systemctl start named
 

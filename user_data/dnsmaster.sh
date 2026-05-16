@@ -1,10 +1,10 @@
 #!/bin/bash
-# Terraform template vars: sld_ip=${sld_ip}  dnsmaster_ip=${dnsmaster_ip}
+# Terraform template vars: root_ip=${root_ip}  tld_ip=${tld_ip}  sld_ip=${sld_ip}
 set -euo pipefail
 exec > >(tee /var/log/user-data.log | logger -t user-data -s) 2>&1
 
 echo "==> Setting hostname"
-hostnamectl set-hostname dns-lab-sld
+hostnamectl set-hostname dns-lab-dnsmaster
 
 echo "==> Updating packages"
 yum update -y
@@ -35,6 +35,7 @@ options {
     allow-transfer  { none; };
     recursion       no;
     dnssec-validation no;
+    notify          yes;
 };
 
 logging {
@@ -48,7 +49,7 @@ logging {
         severity info;
         print-time yes;
     };
-    category xfer-in   { xfer_log; };
+    category xfer-out  { xfer_log; };
     category notify    { xfer_log; };
     category queries   { queries_log; };
 };
@@ -58,35 +59,93 @@ key "dns-lab-transfer" {
     secret "${tsig_secret}";
 };
 
-server ${dnsmaster_ip} { keys { dns-lab-transfer; }; };
+server ${root_ip} { keys { dns-lab-transfer; }; };
+server ${tld_ip}  { keys { dns-lab-transfer; }; };
+server ${sld_ip}  { keys { dns-lab-transfer; }; };
+
+zone "." {
+    type master;
+    file "root.zone";
+    allow-transfer { key dns-lab-transfer; };
+    also-notify    { ${root_ip}; };
+};
+
+zone "lab." {
+    type master;
+    file "lab.zone";
+    allow-transfer { key dns-lab-transfer; };
+    also-notify    { ${tld_ip}; };
+};
 
 zone "example.lab." {
-    type slave;
-    masters { ${dnsmaster_ip}; };
-    file "slaves/example.lab.zone";
-    allow-notify { ${dnsmaster_ip}; };
+    type master;
+    file "example.lab.zone";
+    allow-transfer { key dns-lab-transfer; };
+    also-notify    { ${sld_ip}; };
 };
 NAMED_CONF
 
-echo "==> Creating slaves directory"
-mkdir -p /var/named/slaves
-chown named:named /var/named/slaves
-chmod 770 /var/named/slaves
+echo "==> Writing root zone"
+cat > /var/named/root.zone << 'ZONE'
+$TTL 86400
+.   IN  SOA ns.root. hostmaster.root. (
+            2024010101 ; serial
+            300        ; refresh
+            60         ; retry
+            604800     ; expire
+            86400 )    ; minimum
+
+.           IN  NS  ns.root.
+ns.root.    IN  A   ${root_ip}
+
+lab.        IN  NS  ns.lab.
+ns.lab.     IN  A   ${tld_ip}
+ZONE
+
+echo "==> Writing lab. zone"
+cat > /var/named/lab.zone << 'ZONE'
+$TTL 86400
+lab.    IN  SOA ns.lab. hostmaster.lab. (
+                2024010101 ; serial
+                300        ; refresh
+                60         ; retry
+                604800     ; expire
+                86400 )    ; minimum
+
+lab.            IN  NS  ns.lab.
+ns.lab.         IN  A   ${tld_ip}
+
+example.lab.    IN  NS  ns.example.lab.
+ns.example.lab. IN  A   ${sld_ip}
+ZONE
+
+echo "==> Writing example.lab. zone"
+cat > /var/named/example.lab.zone << 'ZONE'
+$TTL 86400
+example.lab.    IN  SOA ns.example.lab. hostmaster.example.lab. (
+                        2024010101 ; serial
+                        300        ; refresh
+                        60         ; retry
+                        604800     ; expire
+                        86400 )    ; minimum
+
+example.lab.        IN  NS  ns.example.lab.
+ns.example.lab.     IN  A   ${sld_ip}
+
+www.example.lab.    IN  A   192.0.2.1
+mail.example.lab.   IN  A   192.0.2.2
+test.example.lab.   IN  A   192.0.2.3
+example.lab.        IN  MX  10 mail.example.lab.
+ZONE
+
+chown named:named /var/named/root.zone /var/named/lab.zone /var/named/example.lab.zone
+chmod 640 /var/named/root.zone /var/named/lab.zone /var/named/example.lab.zone
 
 echo "==> Validating named configuration"
 named-checkconf
-
-echo "==> Waiting for dnsmaster to be reachable on port 53 (up to 5 min)..."
-count=0
-until nc -zw3 ${dnsmaster_ip} 53 2>/dev/null; do
-  count=$(( count + 1 ))
-  if [ "$count" -ge 30 ]; then
-    echo "  dnsmaster not yet reachable; starting named anyway (AXFR will retry)"
-    break
-  fi
-  echo "  attempt $count/30, retrying in 10s..."
-  sleep 10
-done
+named-checkzone . /var/named/root.zone
+named-checkzone lab. /var/named/lab.zone
+named-checkzone example.lab. /var/named/example.lab.zone
 
 echo "==> Starting named"
 systemctl enable named

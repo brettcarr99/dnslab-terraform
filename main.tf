@@ -8,11 +8,19 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+resource "random_id" "tsig_key" {
+  byte_length = 32
 }
 
 # ── Fixed private IPs (known at plan time, safe to template into user-data) ──
@@ -23,6 +31,8 @@ locals {
   sld_ip         = cidrhost(var.subnet_cidr, 12)
   resolver_ip    = cidrhost(var.subnet_cidr, 13)
   client_ip      = cidrhost(var.subnet_cidr, 14)
+  dnsmaster_ip   = cidrhost(var.subnet_cidr, 15)
+  tsig_secret    = random_id.tsig_key.b64_std
   scripts_bucket = aws_s3_bucket.dns_lab_scripts.id
 }
 
@@ -123,6 +133,8 @@ resource "aws_instance" "root_server" {
   user_data = templatefile("${path.module}/user_data/root.sh", {
     root_ip        = local.root_ip
     tld_ip         = local.tld_ip
+    dnsmaster_ip   = local.dnsmaster_ip
+    tsig_secret    = local.tsig_secret
     sns_topic_arn  = aws_sns_topic.dns_lab.arn
     scripts_bucket = local.scripts_bucket
     aws_region     = var.aws_region
@@ -147,6 +159,8 @@ resource "aws_instance" "tld_server" {
   user_data = templatefile("${path.module}/user_data/tld.sh", {
     tld_ip         = local.tld_ip
     sld_ip         = local.sld_ip
+    dnsmaster_ip   = local.dnsmaster_ip
+    tsig_secret    = local.tsig_secret
     sns_topic_arn  = aws_sns_topic.dns_lab.arn
     scripts_bucket = local.scripts_bucket
     aws_region     = var.aws_region
@@ -170,6 +184,8 @@ resource "aws_instance" "sld_server" {
 
   user_data = templatefile("${path.module}/user_data/sld.sh", {
     sld_ip         = local.sld_ip
+    dnsmaster_ip   = local.dnsmaster_ip
+    tsig_secret    = local.tsig_secret
     sns_topic_arn  = aws_sns_topic.dns_lab.arn
     scripts_bucket = local.scripts_bucket
     aws_region     = var.aws_region
@@ -224,5 +240,31 @@ resource "aws_instance" "client" {
   tags = {
     Name = "dns-lab-client"
     Role = "client"
+  }
+}
+
+resource "aws_instance" "dnsmaster" {
+  ami                         = var.ami_id
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  subnet_id                   = aws_subnet.dns_lab.id
+  private_ip                  = local.dnsmaster_ip
+  vpc_security_group_ids      = [aws_security_group.dns_lab.id]
+  iam_instance_profile        = aws_iam_instance_profile.dns_lab.name
+  user_data_replace_on_change = true
+
+  user_data = templatefile("${path.module}/user_data/dnsmaster.sh", {
+    root_ip        = local.root_ip
+    tld_ip         = local.tld_ip
+    sld_ip         = local.sld_ip
+    tsig_secret    = local.tsig_secret
+    sns_topic_arn  = aws_sns_topic.dns_lab.arn
+    scripts_bucket = local.scripts_bucket
+    aws_region     = var.aws_region
+  })
+
+  tags = {
+    Name = "dns-lab-dnsmaster"
+    Role = "dns-primary"
   }
 }

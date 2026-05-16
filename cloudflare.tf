@@ -12,6 +12,7 @@ locals {
     tlddns   = aws_instance.tld_server.public_ip
     "2lddns" = aws_instance.sld_server.public_ip
     resolver = aws_instance.resolver.public_ip
+    client   = aws_instance.client.public_ip
   }
 }
 

@@ -25,6 +25,11 @@ output "servers" {
       public_ip  = aws_instance.resolver.public_ip
       private_ip = aws_instance.resolver.private_ip
     }
+    client = {
+      dns_name   = "client.${local.zone}"
+      public_ip  = aws_instance.client.public_ip
+      private_ip = aws_instance.client.private_ip
+    }
   }
 }
 
@@ -42,5 +47,11 @@ output "test_commands" {
 
     # Check user-data progress on any node:
     sudo tail -f /var/log/user-data.log
+
+    # SSH into client and run the traffic generator:
+    ssh brettcarr@${aws_instance.client.public_ip}
+    dns-traffic-gen                            # 100 queries at 100ms intervals
+    dns-traffic-gen -n 0 -i 50 -v             # infinite, 50ms interval, verbose
+    dns-traffic-gen -n 1000 -i 10             # burst: 1000 queries at 10ms
   EOT
 }

@@ -22,6 +22,7 @@ locals {
   tld_ip         = cidrhost(var.subnet_cidr, 11)
   sld_ip         = cidrhost(var.subnet_cidr, 12)
   resolver_ip    = cidrhost(var.subnet_cidr, 13)
+  client_ip      = cidrhost(var.subnet_cidr, 14)
   scripts_bucket = aws_s3_bucket.dns_lab_scripts.id
 }
 
@@ -200,5 +201,28 @@ resource "aws_instance" "resolver" {
   tags = {
     Name = "dns-lab-resolver"
     Role = "resolver"
+  }
+}
+
+resource "aws_instance" "client" {
+  ami                         = var.ami_id
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  subnet_id                   = aws_subnet.dns_lab.id
+  private_ip                  = local.client_ip
+  vpc_security_group_ids      = [aws_security_group.dns_lab.id]
+  iam_instance_profile        = aws_iam_instance_profile.dns_lab.name
+  user_data_replace_on_change = true
+
+  user_data = templatefile("${path.module}/user_data/client.sh", {
+    resolver_ip    = local.resolver_ip
+    sns_topic_arn  = aws_sns_topic.dns_lab.arn
+    scripts_bucket = local.scripts_bucket
+    aws_region     = var.aws_region
+  })
+
+  tags = {
+    Name = "dns-lab-client"
+    Role = "client"
   }
 }

@@ -258,13 +258,13 @@ update_zone() {
     if [ "$zone" = "." ]; then
         # Root zone - update NS delegation with varying TTLs
         updates+=$'update delete lab. NS\n'
-        updates+=$'update add lab. '$((300 + RANDOM % 300))' NS ns.lab.\n'
+        updates+=$'update add lab. '$((300 + RANDOM % 300))' IN NS ns.lab.\n'
         log_update "$zone" "MODIFY" "lab. NS" "$new_serial"
 
         # Add 8 temp delegation records
         idx=1; while [ $idx -le 8 ]; do
-            updates+=$'update add tmp'$idx'. '$((3600 + RANDOM % 1800))' NS ns.tmp'$idx'.\n'
-            updates+=$'update add ns.tmp'$idx'. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            updates+=$'update add tmp'$idx'. '$((3600 + RANDOM % 1800))' IN NS ns.tmp'$idx'.\n'
+            updates+=$'update add ns.tmp'$idx'. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
             log_update "$zone" "ADD" "tmp$idx. delegation" "$new_serial"
             idx=$((idx+1))
         done
@@ -272,13 +272,13 @@ update_zone() {
     elif [ "$zone" = "lab." ]; then
         # Lab zone - update NS delegation
         updates+=$'update delete example.lab. NS\n'
-        updates+=$'update add example.lab. '$((300 + RANDOM % 300))' NS ns.example.lab.\n'
+        updates+=$'update add example.lab. '$((300 + RANDOM % 300))' IN NS ns.example.lab.\n'
         log_update "$zone" "MODIFY" "example.lab. NS" "$new_serial"
 
         # Add 8 temp delegation records
         idx=1; while [ $idx -le 8 ]; do
-            updates+=$'update add tmp'$idx'.lab. '$((3600 + RANDOM % 1800))' NS ns.tmp'$idx'.lab.\n'
-            updates+=$'update add ns.tmp'$idx'.lab. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            updates+=$'update add tmp'$idx'.lab. '$((3600 + RANDOM % 1800))' IN NS ns.tmp'$idx'.lab.\n'
+            updates+=$'update add ns.tmp'$idx'.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
             log_update "$zone" "ADD" "tmp$idx.lab. delegation" "$new_serial"
             idx=$((idx+1))
         done
@@ -287,22 +287,22 @@ update_zone() {
         # Example.lab zone - update A records and add temp records
         # Modify www record
         updates+=$'update delete www.example.lab. A\n'
-        updates+=$'update add www.example.lab. 300 A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        updates+=$'update add www.example.lab. 300 IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "www.example.lab" "$new_serial"
 
         # Modify mail record
         updates+=$'update delete mail.example.lab. A\n'
-        updates+=$'update add mail.example.lab. 600 A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        updates+=$'update add mail.example.lab. 600 IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "mail.example.lab" "$new_serial"
 
         # Modify test record
         updates+=$'update delete test.example.lab. A\n'
-        updates+=$'update add test.example.lab. '$((300 + RANDOM % 300))' A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        updates+=$'update add test.example.lab. '$((300 + RANDOM % 300))' IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "test.example.lab" "$new_serial"
 
         # Add 7 temp records with timestamp-based naming
         idx=1; while [ $idx -le 7 ]; do
-            updates+=$'update add temp-'$timestamp'-'$idx'.example.lab. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            updates+=$'update add temp-'$timestamp'-'$idx'.example.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
             log_update "$zone" "ADD" "temp-$timestamp-$idx.example.lab" "$new_serial"
             idx=$((idx+1))
         done

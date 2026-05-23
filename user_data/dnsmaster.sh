@@ -255,57 +255,43 @@ update_zone() {
     local updates=""
     local timestamp=$(date +%s)
 
-    if [ "$zone" = "." ]; then
-        # Root zone - update NS delegation with varying TTLs
-        updates+=$'update delete lab. NS\n'
-        updates+=$'update add lab. '$((300 + RANDOM % 300))' IN NS ns.lab.\n'
-        log_update "$zone" "MODIFY" "lab. NS" "$new_serial"
-
-        # Add 8 temp delegation records
-        idx=1; while [ $idx -le 8 ]; do
-            updates+=$'update add tmp'$idx'. '$((3600 + RANDOM % 1800))' IN NS ns.tmp'$idx'.\n'
-            updates+=$'update add ns.tmp'$idx'. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
-            log_update "$zone" "ADD" "tmp$idx. delegation" "$new_serial"
-            idx=$((idx+1))
-        done
-
-    elif [ "$zone" = "lab." ]; then
-        # Lab zone - update NS delegation
-        updates+=$'update delete example.lab. NS\n'
-        updates+=$'update add example.lab. '$((300 + RANDOM % 300))' IN NS ns.example.lab.\n'
-        log_update "$zone" "MODIFY" "example.lab. NS" "$new_serial"
-
-        # Add 8 temp delegation records
-        idx=1; while [ $idx -le 8 ]; do
-            updates+=$'update add tmp'$idx'.lab. '$((3600 + RANDOM % 1800))' IN NS ns.tmp'$idx'.lab.\n'
-            updates+=$'update add ns.tmp'$idx'.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
-            log_update "$zone" "ADD" "tmp$idx.lab. delegation" "$new_serial"
-            idx=$((idx+1))
-        done
-
-    elif [ "$zone" = "example.lab." ]; then
-        # Example.lab zone - update A records and add temp records
-        # Modify www record
+    # Skip root and lab zones (delegation updates may be restricted)
+    # Only update example.lab zone which has address records
+    if [ "$zone" = "example.lab." ]; then
+        # Modify existing A records with new IPs
         updates+=$'update delete www.example.lab. A\n'
         updates+=$'update add www.example.lab. 300 IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "www.example.lab" "$new_serial"
 
-        # Modify mail record
         updates+=$'update delete mail.example.lab. A\n'
         updates+=$'update add mail.example.lab. 600 IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "mail.example.lab" "$new_serial"
 
-        # Modify test record
         updates+=$'update delete test.example.lab. A\n'
         updates+=$'update add test.example.lab. '$((300 + RANDOM % 300))' IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
         log_update "$zone" "MODIFY" "test.example.lab" "$new_serial"
 
-        # Add 7 temp records with timestamp-based naming
-        idx=1; while [ $idx -le 7 ]; do
+        # Add temporary A records with timestamp-based names
+        idx=1; while [ $idx -le 12 ]; do
+            updates+=$'update add web'$idx'.example.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "web$idx.example.lab" "$new_serial"
+            idx=$((idx+1))
+        done
+
+        # Add temp records with timestamp prefix for cleanup demos
+        idx=1; while [ $idx -le 5 ]; do
             updates+=$'update add temp-'$timestamp'-'$idx'.example.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
             log_update "$zone" "ADD" "temp-$timestamp-$idx.example.lab" "$new_serial"
             idx=$((idx+1))
         done
+
+        # Occasionally delete old temp records to demonstrate record removal
+        # (This helps prevent zone bloat)
+        if [ $((RANDOM % 3)) -eq 0 ]; then
+            updates+=$'update delete web1.example.lab. A\n'
+            updates+=$'update delete web2.example.lab. A\n'
+            log_update "$zone" "DELETE" "web1,web2.example.lab cleanup" "$new_serial"
+        fi
     fi
 
     # Execute all updates in one batch
@@ -322,9 +308,8 @@ update_zone() {
 {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Started ====="
 
-    # Update all three zones
-    update_zone "." "/var/named/root.zone" "10.0.1.10"
-    update_zone "lab." "/var/named/lab.zone" "10.0.1.11"
+    # Update example.lab zone only (root and lab zones contain delegations which have update restrictions)
+    # example.lab zone updates will still propagate via zone transfers to all servers
     update_zone "example.lab." "/var/named/example.lab.zone" "10.0.1.12"
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Completed ====="

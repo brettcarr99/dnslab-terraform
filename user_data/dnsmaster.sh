@@ -68,6 +68,7 @@ zone "." {
     file "root.zone";
     allow-transfer { key dns-lab-transfer; };
     also-notify    { ${root_ip}; };
+    allow-update   { key dns-lab-transfer; };
 };
 
 zone "lab." {
@@ -75,6 +76,7 @@ zone "lab." {
     file "lab.zone";
     allow-transfer { key dns-lab-transfer; };
     also-notify    { ${tld_ip}; };
+    allow-update   { key dns-lab-transfer; };
 };
 
 zone "example.lab." {
@@ -82,6 +84,7 @@ zone "example.lab." {
     file "example.lab.zone";
     allow-transfer { key dns-lab-transfer; };
     also-notify    { ${sld_ip}; };
+    allow-update   { key dns-lab-transfer; };
 };
 NAMED_CONF
 
@@ -147,6 +150,192 @@ named-checkzone . /var/named/root.zone
 named-checkzone lab. /var/named/lab.zone
 named-checkzone example.lab. /var/named/example.lab.zone
 
+echo "==> Creating BIND TSIG key file for nsupdate"
+mkdir -p /etc/bind/keys
+cat > /etc/bind/keys/dns-lab-transfer.key << 'KEY_FILE'
+key "dns-lab-transfer" {
+    algorithm hmac-sha256;
+    secret "${tsig_secret}";
+};
+KEY_FILE
+chmod 600 /etc/bind/keys/dns-lab-transfer.key
+
+echo "==> Creating DNS update script"
+cat > /opt/dns-update-gen.sh << 'UPDATE_SCRIPT'
+#!/bin/bash
+# DNS Lab Dynamic Update Generator
+# Generates aggressive TSIG-authenticated DNS updates every 5 minutes
+# Targets all 3 zones: root (.), lab., example.lab.
+
+set -euo pipefail
+
+DNSMASTER="10.0.1.15"
+TSIG_KEY_FILE="/etc/bind/keys/dns-lab-transfer.key"
+LOG_FILE="/var/log/dns-updates.log"
+LOCK_FILE="/var/run/dns-update-gen.lock"
+
+# Prevent concurrent execution
+if [ -f "$LOCK_FILE" ]; then
+    OLD_PID=$(cat "$LOCK_FILE")
+    if ps -p "$OLD_PID" > /dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Update already in progress (PID $OLD_PID), skipping" >> "$LOG_FILE"
+        exit 0
+    fi
+fi
+echo $$ > "$LOCK_FILE"
+trap "rm -f '$LOCK_FILE'" EXIT
+
+# Logging function
+log_update() {
+    local zone=$1
+    local action=$2
+    local record=$3
+    local serial=$4
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $zone | $action | $record | serial=$serial" >> "$LOG_FILE"
+}
+
+# Generate date-based serial (YYYYMMDDNN)
+get_next_serial() {
+    local zone_file=$1
+    local today=$(date +%Y%m%d)
+    local current_serial=$(grep -A 1 "SOA" "$zone_file" | grep ";" | head -1 | awk '{print $1}' | tail -c 11)
+
+    if [ -z "$current_serial" ]; then
+        current_serial="2024010100"
+    fi
+
+    local current_date=$(echo "$current_serial" | cut -c1-8)
+    local current_version=$(echo "$current_serial" | cut -c9-10)
+
+    if [ "$current_date" = "$today" ]; then
+        # Same day - increment version counter
+        local new_version=$((10#$current_version + 1))
+        if [ $new_version -gt 99 ]; then
+            new_version=0
+        fi
+        printf "%s%02d" "$today" "$new_version"
+    else
+        # New day - reset version counter to 00
+        printf "%s00" "$today"
+    fi
+}
+
+# Execute nsupdate command batch
+execute_updates() {
+    local zone=$1
+    local updates=$2
+
+    nsupdate -k "$TSIG_KEY_FILE" << NSUPDATE_EOF
+server $DNSMASTER
+zone $zone
+$updates
+send
+NSUPDATE_EOF
+
+    if [ $? -eq 0 ]; then
+        return 0
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: nsupdate failed for zone $zone" >> "$LOG_FILE"
+        return 1
+    fi
+}
+
+# Update function for a zone
+update_zone() {
+    local zone=$1
+    local zone_file=$2
+    local auth_server=$3
+
+    log_update "$zone" "START" "processing zone" "N/A"
+
+    # Get next serial
+    local new_serial=$(get_next_serial "$zone_file")
+
+    # Build update batch with 10+ changes
+    local updates=""
+    local timestamp=$(date +%s)
+
+    if [ "$zone" = "." ]; then
+        # Root zone - update NS delegation with varying TTLs
+        updates+=$'update delete lab. NS\n'
+        updates+=$'update add lab. '$((300 + RANDOM % 300))' NS ns.lab.\n'
+        log_update "$zone" "MODIFY" "lab. NS" "$new_serial"
+
+        # Add 8 temp delegation records
+        idx=1; while [ $idx -le 8 ]; do
+            updates+=$'update add tmp'$idx'. '$((3600 + RANDOM % 1800))' NS ns.tmp'$idx'.\n'
+            updates+=$'update add ns.tmp'$idx'. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "tmp$idx. delegation" "$new_serial"
+            idx=$((idx+1))
+        done
+
+    elif [ "$zone" = "lab." ]; then
+        # Lab zone - update NS delegation
+        updates+=$'update delete example.lab. NS\n'
+        updates+=$'update add example.lab. '$((300 + RANDOM % 300))' NS ns.example.lab.\n'
+        log_update "$zone" "MODIFY" "example.lab. NS" "$new_serial"
+
+        # Add 8 temp delegation records
+        idx=1; while [ $idx -le 8 ]; do
+            updates+=$'update add tmp'$idx'.lab. '$((3600 + RANDOM % 1800))' NS ns.tmp'$idx'.lab.\n'
+            updates+=$'update add ns.tmp'$idx'.lab. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "tmp$idx.lab. delegation" "$new_serial"
+            idx=$((idx+1))
+        done
+
+    elif [ "$zone" = "example.lab." ]; then
+        # Example.lab zone - update A records and add temp records
+        # Modify www record
+        updates+=$'update delete www.example.lab. A\n'
+        updates+=$'update add www.example.lab. 300 A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        log_update "$zone" "MODIFY" "www.example.lab" "$new_serial"
+
+        # Modify mail record
+        updates+=$'update delete mail.example.lab. A\n'
+        updates+=$'update add mail.example.lab. 600 A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        log_update "$zone" "MODIFY" "mail.example.lab" "$new_serial"
+
+        # Modify test record
+        updates+=$'update delete test.example.lab. A\n'
+        updates+=$'update add test.example.lab. '$((300 + RANDOM % 300))' A 192.0.2.'$((100 + RANDOM % 155))$'\n'
+        log_update "$zone" "MODIFY" "test.example.lab" "$new_serial"
+
+        # Add 7 temp records with timestamp-based naming
+        idx=1; while [ $idx -le 7 ]; do
+            updates+=$'update add temp-'$timestamp'-'$idx'.example.lab. 300 A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "temp-$timestamp-$idx.example.lab" "$new_serial"
+            idx=$((idx+1))
+        done
+    fi
+
+    # Execute all updates in one batch
+    if execute_updates "$zone" "$updates"; then
+        log_update "$zone" "SUCCESS" "batch update completed" "$new_serial"
+        return 0
+    else
+        log_update "$zone" "FAILED" "batch update failed" "$new_serial"
+        return 1
+    fi
+}
+
+# Main execution
+{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Started ====="
+
+    # Update all three zones
+    update_zone "." "/var/named/root.zone" "10.0.1.10"
+    update_zone "lab." "/var/named/lab.zone" "10.0.1.11"
+    update_zone "example.lab." "/var/named/example.lab.zone" "10.0.1.12"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Completed ====="
+    echo ""
+} >> "$LOG_FILE" 2>&1
+
+exit 0
+UPDATE_SCRIPT
+
+chmod 755 /opt/dns-update-gen.sh
+
 echo "==> Starting named"
 systemctl enable named
 systemctl start named
@@ -156,12 +345,20 @@ aws s3 cp s3://${scripts_bucket}/chronicled-install.sh /tmp/chronicled-install.s
 chmod +x /tmp/chronicled-install.sh
 /tmp/chronicled-install.sh
 
-echo "==> Installing maintenance cron jobs"
+echo "==> Installing maintenance and DNS update cron jobs"
 cat > /etc/cron.d/dns-lab-maintenance << 'CRON'
-0 2 * * *   root  yum update -y >> /var/log/yum-update.log 2>&1
-0 3 * * 1   root  /sbin/reboot
+# DNS dynamic updates - every 5 minutes
+*/5 * * * *  root  /opt/dns-update-gen.sh >> /var/log/dns-updates.log 2>&1
+
+# System maintenance
+0 2 * * *    root  yum update -y >> /var/log/yum-update.log 2>&1
+0 3 * * 1    root  /sbin/reboot
 CRON
 chmod 644 /etc/cron.d/dns-lab-maintenance
+
+echo "==> Initializing DNS updates log file"
+touch /var/log/dns-updates.log
+chmod 644 /var/log/dns-updates.log
 
 echo "==> Sending reboot notification"
 aws sns publish \

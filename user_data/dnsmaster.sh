@@ -220,22 +220,29 @@ get_next_serial() {
     fi
 }
 
-# Execute nsupdate command batch
+# Execute nsupdate commands (write to file then execute)
 execute_updates() {
     local zone=$1
     local updates=$2
+    local tmpfile="/tmp/nsupdate-cmd-$RANDOM.txt"
 
-    nsupdate -k "$TSIG_KEY_FILE" << NSUPDATE_EOF
-server $DNSMASTER
-zone $zone
-$updates
-send
-NSUPDATE_EOF
+    # Write commands to temporary file, preserving newlines in updates
+    {
+        printf "%s\n" "server $DNSMASTER"
+        printf "%s\n" "zone $zone"
+        printf "%s\n" "$updates"
+        printf "%s\n" "send"
+    } > "$tmpfile"
 
-    if [ $? -eq 0 ]; then
+    # Execute nsupdate reading from file
+    nsupdate -k "$TSIG_KEY_FILE" < "$tmpfile" >> "$LOG_FILE" 2>&1
+    local result=$?
+    rm -f "$tmpfile"
+
+    if [ $result -eq 0 ]; then
         return 0
     else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: nsupdate failed for zone $zone" >> "$LOG_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: nsupdate failed for zone $zone (exit code: $result)" >> "$LOG_FILE"
         return 1
     fi
 }

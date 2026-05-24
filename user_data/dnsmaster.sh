@@ -166,6 +166,12 @@ cat > /opt/dns-update-gen.sh << 'UPDATE_SCRIPT'
 # DNS Lab Dynamic Update Generator
 # Generates aggressive TSIG-authenticated DNS updates every 5 minutes
 # Targets all 3 zones: root (.), lab., example.lab.
+#
+# Root zone: randomly adds/removes temporary delegations (tmpzone*, test*.zone)
+# Lab zone: randomly adds/removes temporary delegations in lab namespace (tmptest*, lab*.zone.lab.)
+# Example.lab zone: modifies A records (www, mail, test) and adds temporary host records
+#
+# All zone changes propagate to slave servers via NOTIFY and zone transfers
 
 set -euo pipefail
 
@@ -262,9 +268,60 @@ update_zone() {
     local updates=""
     local timestamp=$(date +%s)
 
-    # Skip root and lab zones (delegation updates may be restricted)
-    # Only update example.lab zone which has address records
-    if [ "$zone" = "example.lab." ]; then
+    if [ "$zone" = "." ]; then
+        # Root zone - add/remove temporary delegations and NS records
+        # Randomly add or delete test delegations
+        if [ $((RANDOM % 2)) -eq 0 ]; then
+            # Add temporary delegation
+            idx=$((1 + RANDOM % 5))
+            updates+=$'update add tmpzone'$idx'. '$((3600 + RANDOM % 1800))' IN NS ns.tmpzone'$idx.'.\n'
+            updates+=$'update add ns.tmpzone'$idx'. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "tmpzone$idx. delegation" "$new_serial"
+        else
+            # Delete old temporary delegation
+            idx=$((1 + RANDOM % 5))
+            updates+=$'update delete tmpzone'$idx'. NS\n'
+            updates+=$'update delete ns.tmpzone'$idx'. A\n'
+            log_update "$zone" "DELETE" "tmpzone$idx. delegation" "$new_serial"
+        fi
+
+        # Add 5-8 more temporary delegations
+        num_delegations=$((5 + RANDOM % 4))
+        idx=1; while [ $idx -le $num_delegations ]; do
+            updates+=$'update add test'$idx'.zone. '$((3600 + RANDOM % 1800))' IN NS ns.test'$idx'.zone.\n'
+            updates+=$'update add ns.test'$idx'.zone. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "test$idx.zone delegation" "$new_serial"
+            idx=$((idx+1))
+        done
+
+    elif [ "$zone" = "lab." ]; then
+        # Lab zone - add/remove temporary delegations in lab namespace
+        # Randomly add or delete test delegations
+        if [ $((RANDOM % 2)) -eq 0 ]; then
+            # Add temporary delegation
+            idx=$((1 + RANDOM % 5))
+            updates+=$'update add tmptest'$idx'.lab. '$((3600 + RANDOM % 1800))' IN NS ns.tmptest'$idx'.lab.\n'
+            updates+=$'update add ns.tmptest'$idx'.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "tmptest$idx.lab. delegation" "$new_serial"
+        else
+            # Delete old temporary delegation
+            idx=$((1 + RANDOM % 5))
+            updates+=$'update delete tmptest'$idx'.lab. NS\n'
+            updates+=$'update delete ns.tmptest'$idx'.lab. A\n'
+            log_update "$zone" "DELETE" "tmptest$idx.lab. delegation" "$new_serial"
+        fi
+
+        # Add 5-8 more temporary delegations in lab namespace
+        num_delegations=$((5 + RANDOM % 4))
+        idx=1; while [ $idx -le $num_delegations ]; do
+            updates+=$'update add lab'$idx'.zone.lab. '$((3600 + RANDOM % 1800))' IN NS ns.lab'$idx'.zone.lab.\n'
+            updates+=$'update add ns.lab'$idx'.zone.lab. 300 IN A 192.0.2.'$((RANDOM % 256))$'\n'
+            log_update "$zone" "ADD" "lab$idx.zone.lab. delegation" "$new_serial"
+            idx=$((idx+1))
+        done
+
+    elif [ "$zone" = "example.lab." ]; then
+        # Example.lab zone - update A records and add temp records
         # Modify existing A records with new IPs
         updates+=$'update delete www.example.lab. A\n'
         updates+=$'update add www.example.lab. 300 IN A 192.0.2.'$((100 + RANDOM % 155))$'\n'
@@ -293,7 +350,6 @@ update_zone() {
         done
 
         # Occasionally delete old temp records to demonstrate record removal
-        # (This helps prevent zone bloat)
         if [ $((RANDOM % 3)) -eq 0 ]; then
             updates+=$'update delete web1.example.lab. A\n'
             updates+=$'update delete web2.example.lab. A\n'
@@ -315,8 +371,14 @@ update_zone() {
 {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Started ====="
 
-    # Update example.lab zone only (root and lab zones contain delegations which have update restrictions)
-    # example.lab zone updates will still propagate via zone transfers to all servers
+    # Update all three zones with TSIG-authenticated dynamic updates
+    # Root zone: add/remove temporary delegations
+    update_zone "." "/var/named/root.zone" "10.0.1.10"
+
+    # Lab zone: add/remove temporary delegations in lab namespace
+    update_zone "lab." "/var/named/lab.zone" "10.0.1.11"
+
+    # Example.lab zone: modify A records and add temporary host records
     update_zone "example.lab." "/var/named/example.lab.zone" "10.0.1.12"
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== DNS Update Cycle Completed ====="

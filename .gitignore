@@ -2,3 +2,5 @@ terraform.tfvars
 *.tfstate
 *.tfstate.backup
 .terraform/
+.claude/worktrees/
+

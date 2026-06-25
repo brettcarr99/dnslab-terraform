@@ -32,6 +32,11 @@ resource "aws_iam_role_policy" "dns_lab_instance" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "dns_lab_ssm" {
+  role       = aws_iam_role.dns_lab_instance.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "dns_lab" {
   name = "dns-lab-instance-profile"
   role = aws_iam_role.dns_lab_instance.name
